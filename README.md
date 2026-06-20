@@ -2,6 +2,10 @@
 
 Rewordly is a CLI tool that improves your writing using AI. Supports **rephrase**, **grammar correction**, and **tone adjustment** with an interactive terminal UI that shows a side-by-side diff of your original text vs. the suggestion.
 
+![Rewordly screenshot](screenshot.svg)
+
+---
+
 ## Features
 
 - 🔄 **Rephrase** — rewrite text naturally while preserving meaning
