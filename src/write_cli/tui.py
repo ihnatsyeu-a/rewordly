@@ -140,13 +140,36 @@ def _build_diff_highlights(
 class DiffTextArea(SuggestionTextArea):
     """Read-only TextArea that shows the suggestion with added-word highlights in green."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._copy_debounce: asyncio.TimerHandle | None = None
+
     def on_mount(self) -> None:
         from rich.style import Style
         try:
-            # Inject diff.added style into the active theme so _highlights can use it
             self._theme.syntax_styles["diff.added"] = Style(color="green", bold=True)
         except Exception:
-            pass  # if theme injection fails, text is still selectable
+            pass
+
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        if self._copy_debounce is not None:
+            self._copy_debounce.cancel()
+            self._copy_debounce = None
+        if self.selected_text:
+            loop = asyncio.get_event_loop()
+            self._copy_debounce = loop.call_later(0.4, self._do_copy)
+
+    def _do_copy(self) -> None:
+        self._copy_debounce = None
+        text = self.selected_text
+        if not text:
+            return
+        try:
+            import pyperclip
+            pyperclip.copy(text)
+            self.app.notify("📋 Copied!", timeout=1.5)
+        except Exception:
+            self.app.notify("⚠ Clipboard not available.", severity="warning", timeout=2)
 
     def load_diff(self, original: str, revised: str) -> None:
         from collections import defaultdict
