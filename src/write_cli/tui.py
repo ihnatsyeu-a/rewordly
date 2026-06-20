@@ -198,7 +198,7 @@ class WriteApp(App):
         width: 1fr;
         height: 1fr;
         border: none;
-        padding: 1 2;
+        padding: 0;
     }
     #footer-bar {
         dock: bottom;
