@@ -21,6 +21,11 @@ _MODE_INSTRUCTIONS: dict[str, str] = {
         "Correct all grammar, spelling, and punctuation errors in the following {language} text. "
         "Preserve the author's voice, style, and meaning exactly — do not rephrase or change the tone."
     ),
+    "alternative": (
+        "Rephrase the following {language} text in a {tone} tone, but produce a version that is "
+        "distinctly different in wording and sentence structure from any previous suggestion. "
+        "Preserve the original meaning."
+    ),
 }
 
 

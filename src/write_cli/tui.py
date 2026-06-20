@@ -11,6 +11,7 @@ from textual.widgets import (
     Button,
     Header,
     Label,
+    Static,
     TextArea,
 )
 
@@ -54,6 +55,7 @@ _LANG_CODES: dict[str, str] = {
 
 MODES = ["rephrase", "grammar"]
 MODE_LABELS = {"rephrase": "Rephrase", "grammar": "Grammar"}
+MAX_ALTERNATIVES = 3
 
 
 def _parse_retry_seconds(error_str: str) -> int | None:
@@ -121,6 +123,13 @@ class WriteApp(App):
         height: 1fr;
         border: none;
     }
+    #diff-panel {
+        width: 1fr;
+        height: 1fr;
+        border: none;
+        padding: 1 2;
+        display: none;
+    }
     #right-panel-wrap {
         width: 1fr;
         height: 1fr;
@@ -146,6 +155,10 @@ class WriteApp(App):
     #copy-hint-key.is-disabled, #copy-hint-label.is-disabled {
         color: $text-disabled;
         background: transparent;
+    }
+    #alt-counter {
+        color: $accent;
+        margin: 0 2;
     }
     .toolbar-label {
         margin: 0 1;
@@ -185,11 +198,14 @@ class WriteApp(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+g", "generate", "Generate", show=True),
-        Binding("ctrl+t", "cycle_tone", "Tone", show=True),
-        Binding("ctrl+r", "cycle_mode", "Mode", show=True),
-        Binding("ctrl+y", "accept", "Copy all", show=True),
-        Binding("ctrl+q", "quit", "Quit", show=True),
+        Binding("ctrl+g", "generate", "Generate", show=True, priority=True),
+        Binding("ctrl+t", "cycle_tone", "Tone", show=True, priority=True),
+        Binding("ctrl+r", "cycle_mode", "Mode", show=True, priority=True),
+        Binding("ctrl+d", "toggle_diff", "Diff", show=True, priority=True),
+        Binding("ctrl+n", "next_alt", "Next alt", show=False, priority=True),
+        Binding("ctrl+p", "prev_alt", "Prev alt", show=False, priority=True),
+        Binding("ctrl+y", "accept", "Copy all", show=True, priority=True),
+        Binding("ctrl+q", "quit", "Quit", show=True, priority=True),
     ]
 
     def __init__(self, provider, config) -> None:  # type: ignore[type-arg]
@@ -206,6 +222,13 @@ class WriteApp(App):
         self._last_generated_key: tuple[str, str, str, str] | None = None
         # Track text at last debounce trigger to detect trivial changes
         self._last_triggered_text: str = ""
+        # Diff feature
+        self._diff_mode: bool = False
+        self._diff_markup: str = ""        # Rich markup of revised suggestion
+        self._last_input_text: str = ""    # original input used for current suggestion
+        # Alternatives feature
+        self._alternatives: list[str] = []
+        self._alt_index: int = 0
 
     def _active_mode(self) -> str:
         return MODES[self._mode_index]
@@ -218,6 +241,7 @@ class WriteApp(App):
                 yield TextArea(id="input-area")
             with Vertical(id="right-panel-wrap"):
                 yield SuggestionTextArea("", id="right-panel", read_only=True)
+                yield Static("", id="diff-panel", markup=True)
         with Horizontal(id="footer-bar"):
             yield Label("^G", classes="footer-hint-key")
             yield Label("Generate", classes="footer-hint")
@@ -225,6 +249,11 @@ class WriteApp(App):
             yield Label("Tone", classes="footer-hint")
             yield Label("^R", classes="footer-hint-key")
             yield Label("Mode", classes="footer-hint")
+            yield Label("^D", classes="footer-hint-key")
+            yield Label("Diff", classes="footer-hint")
+            yield Label("^N/^P", classes="footer-hint-key")
+            yield Label("Alt", classes="footer-hint")
+            yield Label("", id="alt-counter")
             yield Label("^Y", classes="footer-hint-key", id="copy-hint-key")
             yield Label("Copy all", classes="footer-hint", id="copy-hint-label")
             yield Label("^Q", classes="footer-hint-key")
@@ -251,6 +280,8 @@ class WriteApp(App):
               for m in MODES],
             Label("  ", classes="toolbar-label"),
             Button("⚡ Generate", id="generate-btn", variant="primary"),
+            Label("  ", classes="toolbar-label"),
+            Button("Diff", id="diff-btn", classes="mode-btn"),
         )
         self._refresh_toolbar_states()
         self.query_one("#input-area", TextArea).focus()
@@ -267,6 +298,7 @@ class WriteApp(App):
         for m in MODES:
             btn = self.query_one(f"#mode-{m}", Button)
             btn.set_class(m == self._active_mode(), "is-active")
+        self.query_one("#diff-btn", Button).set_class(self._diff_mode, "is-active")
 
     def _update_toolbar(self) -> None:
         self._refresh_toolbar_states()
@@ -319,6 +351,8 @@ class WriteApp(App):
             self._trigger_auto_generate()
         elif btn_id == "generate-btn":
             self.action_generate()
+        elif btn_id == "diff-btn":
+            self.action_toggle_diff()
         event.stop()
 
     def action_cycle_tone(self) -> None:
@@ -332,6 +366,84 @@ class WriteApp(App):
         self._update_toolbar()
         self.notify(f"Mode: {self._active_mode()}", timeout=1.5)
         self._trigger_auto_generate()
+
+    def action_toggle_diff(self) -> None:
+        self._diff_mode = not self._diff_mode
+        plain = self.query_one("#right-panel", SuggestionTextArea)
+        diff = self.query_one("#diff-panel", Static)
+        plain.display = not self._diff_mode
+        diff.display = self._diff_mode
+        if self._diff_mode:
+            self._update_diff_panel()
+        self._refresh_toolbar_states()
+
+    def _update_diff_panel(self) -> None:
+        if self._diff_markup:
+            self.query_one("#diff-panel", Static).update(self._diff_markup)
+        else:
+            self.query_one("#diff-panel", Static).update("[dim]No diff yet — generate a suggestion first.[/dim]")
+
+    def action_next_alt(self) -> None:
+        if self._generating:
+            return
+        if self._alt_index < len(self._alternatives) - 1:
+            self._display_alternative(self._alt_index + 1)
+        elif len(self._alternatives) < MAX_ALTERNATIVES and self._last_input_text:
+            self._run_alternative(self._last_input_text)
+        else:
+            self.notify(f"Max {MAX_ALTERNATIVES} alternatives reached.", timeout=1.5)
+
+    def action_prev_alt(self) -> None:
+        if self._alt_index > 0:
+            self._display_alternative(self._alt_index - 1)
+
+    def _display_alternative(self, idx: int) -> None:
+        from .diff import compute_diff
+        self._alt_index = idx
+        suggestion = self._alternatives[idx]
+        self._suggestion = suggestion
+        self.query_one("#right-panel", SuggestionTextArea).load_text(suggestion)
+        _, revised = compute_diff(self._last_input_text, suggestion)
+        self._diff_markup = revised
+        if self._diff_mode:
+            self._update_diff_panel()
+        self._update_alt_counter()
+        self._set_copy_btn(True)
+
+    def _update_alt_counter(self) -> None:
+        counter = self.query_one("#alt-counter", Label)
+        if len(self._alternatives) <= 1:
+            counter.update("")
+        else:
+            counter.update(f"{self._alt_index + 1}/{len(self._alternatives)}")
+
+    @work(exclusive=False)
+    async def _run_alternative(self, text: str) -> None:
+        self._generating = True
+        self._set_copy_btn(False)
+        language = await asyncio.get_event_loop().run_in_executor(
+            None, detect_language, text
+        )
+        accumulated = ""
+        try:
+            gen: AsyncIterator[str] = self._provider.stream_suggestion(
+                text=text,
+                mode="alternative",
+                tone=self._config.tone.value,
+                language=language,
+                model=self._config.model,
+            )
+            async for token in gen:
+                accumulated += token
+        except Exception as exc:
+            self.notify(f"Alt generation failed: {str(exc)[:80]}", severity="error", timeout=4)
+            self._generating = False
+            self._set_copy_btn(bool(self._suggestion))
+            return
+        if accumulated:
+            self._alternatives.append(accumulated)
+            self._display_alternative(len(self._alternatives) - 1)
+        self._generating = False
 
     def _cache_key(self, text: str) -> tuple[str, str, str, str]:
         return (text, self._active_mode(), self._config.tone.value, self._config.model)
@@ -401,6 +513,7 @@ class WriteApp(App):
 
     @work(exclusive=True)
     async def _run_generation(self, text: str) -> None:
+        from .diff import compute_diff
         self._generating = True
         self._set_copy_btn(False)
         panel = self.query_one("#right-panel", SuggestionTextArea)
@@ -440,6 +553,16 @@ class WriteApp(App):
             accumulated += f"\n\n[Input was truncated to {self._config.max_input_chars} characters]"
 
         self._suggestion = accumulated
+        self._last_input_text = text
+        # Compute diff markup
+        _, revised_markup = compute_diff(text, accumulated)
+        self._diff_markup = revised_markup
+        if self._diff_mode:
+            self._update_diff_panel()
+        # Reset alternatives to just this first result
+        self._alternatives = [accumulated]
+        self._alt_index = 0
+        self._update_alt_counter()
         # Store in cache (evict oldest if over 20 entries)
         key = self._cache_key(text)
         if len(self._cache) >= 20:
