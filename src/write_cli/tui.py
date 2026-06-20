@@ -11,7 +11,6 @@ from textual.widgets import (
     Button,
     Header,
     Label,
-    Static,
     TextArea,
 )
 
@@ -84,7 +83,79 @@ class SuggestionTextArea(TextArea):
                 event.stop()
 
 
-class StatusBar(Label):
+def _build_diff_highlights(
+    original: str, revised: str
+) -> tuple[str, dict[int, list[tuple[int, int, str]]]]:
+    """Return (revised_text, highlights) where highlights marks added word ranges green.
+
+    highlights is dict[line_index -> list[(start_col, end_col, highlight_name)]].
+    """
+    import re
+    import difflib
+    from collections import defaultdict
+
+    orig_tokens = re.findall(r"\S+|\s+", original)
+    rev_tokens = re.findall(r"\S+|\s+", revised)
+
+    # Build cumulative char offsets for each token in revised
+    rev_offsets: list[int] = []
+    pos = 0
+    for t in rev_tokens:
+        rev_offsets.append(pos)
+        pos += len(t)
+    rev_offsets.append(pos)  # sentinel
+
+    rev_lines = revised.split("\n")
+
+    def offset_to_line_col(offset: int) -> tuple[int, int]:
+        cumulative = 0
+        for line_idx, line in enumerate(rev_lines):
+            line_end = cumulative + len(line)
+            if offset <= line_end:
+                return line_idx, offset - cumulative
+            cumulative = line_end + 1  # +1 for \n
+        last = len(rev_lines) - 1
+        return last, len(rev_lines[last])
+
+    highlights: dict[int, list[tuple[int, int, str]]] = defaultdict(list)
+    matcher = difflib.SequenceMatcher(None, orig_tokens, rev_tokens, autojunk=False)
+
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag in ("insert", "replace"):
+            start_char = rev_offsets[j1]
+            end_char = rev_offsets[j2]
+            s_line, s_col = offset_to_line_col(start_char)
+            e_line, e_col = offset_to_line_col(end_char)
+            if s_line == e_line:
+                highlights[s_line].append((s_col, e_col, "diff.added"))
+            else:
+                highlights[s_line].append((s_col, len(rev_lines[s_line]), "diff.added"))
+                for mid in range(s_line + 1, e_line):
+                    highlights[mid].append((0, len(rev_lines[mid]), "diff.added"))
+                highlights[e_line].append((0, e_col, "diff.added"))
+
+    return revised, dict(highlights)
+
+
+class DiffTextArea(SuggestionTextArea):
+    """Read-only TextArea that shows the suggestion with added-word highlights in green."""
+
+    def on_mount(self) -> None:
+        from rich.style import Style
+        try:
+            # Inject diff.added style into the active theme so _highlights can use it
+            self._theme.syntax_styles["diff.added"] = Style(color="green", bold=True)
+        except Exception:
+            pass  # if theme injection fails, text is still selectable
+
+    def load_diff(self, original: str, revised: str) -> None:
+        from collections import defaultdict
+        text, hl = _build_diff_highlights(original, revised)
+        self.load_text(text)
+        self._highlights = defaultdict(list, hl)
+        self.refresh()
+
+
     DEFAULT_CSS = """
     StatusBar {
         dock: bottom;
@@ -224,7 +295,7 @@ class WriteApp(App):
         self._last_triggered_text: str = ""
         # Diff feature
         self._diff_mode: bool = False
-        self._diff_markup: str = ""        # Rich markup of revised suggestion
+        self._diff_markup: str = ""        # kept for compatibility, no longer used for display
         self._last_input_text: str = ""    # original input used for current suggestion
         # Alternatives feature
         self._alternatives: list[str] = []
@@ -241,7 +312,7 @@ class WriteApp(App):
                 yield TextArea(id="input-area")
             with Vertical(id="right-panel-wrap"):
                 yield SuggestionTextArea("", id="right-panel", read_only=True)
-                yield Static("", id="diff-panel", markup=True)
+                yield DiffTextArea("", id="diff-panel", read_only=True)
         with Horizontal(id="footer-bar"):
             yield Label("^G", classes="footer-hint-key")
             yield Label("Generate", classes="footer-hint")
@@ -370,7 +441,7 @@ class WriteApp(App):
     def action_toggle_diff(self) -> None:
         self._diff_mode = not self._diff_mode
         plain = self.query_one("#right-panel", SuggestionTextArea)
-        diff = self.query_one("#diff-panel", Static)
+        diff = self.query_one("#diff-panel", DiffTextArea)
         plain.display = not self._diff_mode
         diff.display = self._diff_mode
         if self._diff_mode:
@@ -378,10 +449,11 @@ class WriteApp(App):
         self._refresh_toolbar_states()
 
     def _update_diff_panel(self) -> None:
-        if self._diff_markup:
-            self.query_one("#diff-panel", Static).update(self._diff_markup)
+        diff = self.query_one("#diff-panel", DiffTextArea)
+        if self._last_input_text and self._suggestion:
+            diff.load_diff(self._last_input_text, self._suggestion)
         else:
-            self.query_one("#diff-panel", Static).update("[dim]No diff yet — generate a suggestion first.[/dim]")
+            diff.load_text("No diff yet — generate a suggestion first.")
 
     def action_next_alt(self) -> None:
         if self._generating:
@@ -398,13 +470,10 @@ class WriteApp(App):
             self._display_alternative(self._alt_index - 1)
 
     def _display_alternative(self, idx: int) -> None:
-        from .diff import compute_diff
         self._alt_index = idx
         suggestion = self._alternatives[idx]
         self._suggestion = suggestion
         self.query_one("#right-panel", SuggestionTextArea).load_text(suggestion)
-        _, revised = compute_diff(self._last_input_text, suggestion)
-        self._diff_markup = revised
         if self._diff_mode:
             self._update_diff_panel()
         self._update_alt_counter()
@@ -513,7 +582,6 @@ class WriteApp(App):
 
     @work(exclusive=True)
     async def _run_generation(self, text: str) -> None:
-        from .diff import compute_diff
         self._generating = True
         self._set_copy_btn(False)
         panel = self.query_one("#right-panel", SuggestionTextArea)
@@ -554,9 +622,6 @@ class WriteApp(App):
 
         self._suggestion = accumulated
         self._last_input_text = text
-        # Compute diff markup
-        _, revised_markup = compute_diff(text, accumulated)
-        self._diff_markup = revised_markup
         if self._diff_mode:
             self._update_diff_panel()
         # Reset alternatives to just this first result
