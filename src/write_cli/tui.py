@@ -67,10 +67,26 @@ def _parse_retry_seconds(error_str: str) -> int | None:
     return None
 
 
+class InputTextArea(TextArea):
+    """Left-panel input TextArea that passes Ctrl+Y up to the app."""
+
+    def on_key(self, event) -> None:
+        if event.key == "ctrl+y":
+            self.app.action_accept()
+            event.prevent_default()
+            event.stop()
+
+
 class SuggestionTextArea(TextArea):
     """Read-only TextArea that copies selections to the system clipboard on Ctrl+C."""
 
     def on_key(self, event) -> None:
+        if event.key == "ctrl+y":
+            # Let the app-level binding handle Copy All regardless of focus.
+            self.app.action_accept()
+            event.prevent_default()
+            event.stop()
+            return
         if event.key in ("ctrl+c", "meta+c"):
             text = self.selected_text
             if text:
@@ -327,7 +343,7 @@ class WriteApp(App):
         yield self._build_toolbar()
         with Horizontal(id="panels"):
             with Vertical(id="left-panel"):
-                yield TextArea(id="input-area")
+                yield InputTextArea(id="input-area")
             with Vertical(id="right-panel-wrap"):
                 yield Label("", id="loading")
                 yield DiffTextArea("", id="diff-panel", read_only=True)
