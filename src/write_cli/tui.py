@@ -278,12 +278,6 @@ class WriteApp(App):
         background: $primary;
         color: $background;
     }
-    #generate-btn {
-        min-width: 12;
-        height: 1;
-        margin: 0 1;
-        border: none;
-    }
     #toolbar {
         height: 1;
         background: $surface;
@@ -294,7 +288,6 @@ class WriteApp(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+g", "generate", "Generate", show=True, priority=True),
         Binding("ctrl+t", "cycle_tone", "Tone", show=True, priority=True),
         Binding("ctrl+r", "cycle_mode", "Mode", show=True, priority=True),
         Binding("ctrl+n", "next_alt", "Next alt", show=False, priority=True),
@@ -339,8 +332,6 @@ class WriteApp(App):
                 yield Label("", id="loading")
                 yield DiffTextArea("", id="diff-panel", read_only=True)
         with Horizontal(id="footer-bar"):
-            yield Label("^G", classes="footer-hint-key")
-            yield Label("Generate", classes="footer-hint")
             yield Label("^T", classes="footer-hint-key")
             yield Label("Tone", classes="footer-hint")
             yield Label("^R", classes="footer-hint-key")
@@ -372,8 +363,6 @@ class WriteApp(App):
             Label("Mode:", classes="toolbar-label"),
             *[Button(m.capitalize(), id=f"mode-{m}", classes="mode-btn")
               for m in MODES],
-            Label("  ", classes="toolbar-label"),
-            Button("⚡ Generate", id="generate-btn", variant="primary"),
         )
         self._refresh_toolbar_states()
         self.query_one("#input-area", TextArea).focus()
@@ -440,8 +429,6 @@ class WriteApp(App):
             self._refresh_toolbar_states()
             self.notify(f"Mode: {mode}", timeout=1.5)
             self._trigger_auto_generate()
-        elif btn_id == "generate-btn":
-            self.action_generate()
         event.stop()
 
     def action_cycle_tone(self) -> None:
@@ -571,20 +558,6 @@ class WriteApp(App):
             return
         self._run_generation(text)
 
-    def action_generate(self) -> None:
-        """Force-generate, bypassing debounce and cache."""
-        if self._debounce_handle is not None:
-            self._debounce_handle.cancel()
-            self._debounce_handle = None
-        text = self.query_one("#input-area", TextArea).text.strip()
-        if not text:
-            self.notify("Please enter some text first.", severity="warning")
-            return
-        # Invalidate cache for current key so force-generate always calls API
-        self._cache.pop(self._cache_key(text), None)
-        self._last_generated_key = None
-        self._run_generation(text)
-
     def _set_copy_btn(self, enabled: bool) -> None:
         for wid in ("copy-hint-key", "copy-hint-label"):
             self.query_one(f"#{wid}", Label).set_class(not enabled, "is-disabled")
@@ -690,7 +663,7 @@ class WriteApp(App):
                 panel.load_text(
                     "⏳ Rate limit reached\n\n"
                     "The free tier quota is exhausted.\n"
-                    "• Wait a minute and press Ctrl+G to retry\n"
+                    "• Wait a minute and press Ctrl+R to retry\n"
                     "• Or switch provider: --provider openai / --provider github"
                 )
         elif code == 401 or "401" in exc_str or "unauthorized" in exc_str.lower() or "api key" in exc_str.lower():
@@ -709,11 +682,11 @@ class WriteApp(App):
             panel.load_text(
                 "🌐 Network error\n\n"
                 "Could not reach the AI provider.\n"
-                "Check your internet connection and press Ctrl+G to retry."
+                "Check your internet connection and press Ctrl+R to retry."
             )
         else:
             panel.load_text(
-                f"⚠ Unexpected error\n\n{exc_str[:300]}\n\nPress Ctrl+G to retry."
+                f"⚠ Unexpected error\n\n{exc_str[:300]}\n\nPress Ctrl+R to retry."
             )
 
     def action_accept(self) -> None:
