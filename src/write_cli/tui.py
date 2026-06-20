@@ -55,6 +55,7 @@ _LANG_CODES: dict[str, str] = {
 MODES = ["rephrase", "grammar"]
 MODE_LABELS = {"rephrase": "Rephrase", "grammar": "Grammar"}
 MAX_ALTERNATIVES = 3
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 def _parse_retry_seconds(error_str: str) -> int | None:
@@ -217,6 +218,13 @@ class WriteApp(App):
         height: 1fr;
         border: solid $primary;
     }
+    #loading {
+        dock: top;
+        height: 1;
+        padding: 0 0;
+        color: $accent;
+        display: none;
+    }
     #diff-panel {
         width: 1fr;
         height: 1fr;
@@ -314,6 +322,9 @@ class WriteApp(App):
         # Alternatives feature
         self._alternatives: list[str] = []
         self._alt_index: int = 0
+        # Spinner
+        self._spinner_frame: int = 0
+        self._spinner_timer = None
 
     def _active_mode(self) -> str:
         return MODES[self._mode_index]
@@ -325,6 +336,7 @@ class WriteApp(App):
             with Vertical(id="left-panel"):
                 yield TextArea(id="input-area")
             with Vertical(id="right-panel-wrap"):
+                yield Label("", id="loading")
                 yield DiffTextArea("", id="diff-panel", read_only=True)
         with Horizontal(id="footer-bar"):
             yield Label("^G", classes="footer-hint-key")
@@ -484,6 +496,7 @@ class WriteApp(App):
     async def _run_alternative(self, text: str) -> None:
         self._generating = True
         self._set_copy_btn(False)
+        self._start_spinner()
         language = await asyncio.get_event_loop().run_in_executor(
             None, detect_language, text
         )
@@ -501,11 +514,13 @@ class WriteApp(App):
         except Exception as exc:
             self.notify(f"Alt generation failed: {str(exc)[:80]}", severity="error", timeout=4)
             self._generating = False
+            self._stop_spinner()
             self._set_copy_btn(bool(self._suggestion))
             return
         if accumulated:
             self._alternatives.append(accumulated)
             self._display_alternative(len(self._alternatives) - 1)
+        self._stop_spinner()
         self._generating = False
 
     def _cache_key(self, text: str) -> tuple[str, str, str, str]:
@@ -574,10 +589,30 @@ class WriteApp(App):
         for wid in ("copy-hint-key", "copy-hint-label"):
             self.query_one(f"#{wid}", Label).set_class(not enabled, "is-disabled")
 
+    def _start_spinner(self) -> None:
+        self._spinner_frame = 0
+        lbl = self.query_one("#loading", Label)
+        lbl.display = True
+        lbl.update(f"{SPINNER_FRAMES[0]} Generating")
+        self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
+
+    def _stop_spinner(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        self.query_one("#loading", Label).display = False
+
+    def _tick_spinner(self) -> None:
+        self._spinner_frame = (self._spinner_frame + 1) % len(SPINNER_FRAMES)
+        self.query_one("#loading", Label).update(
+            f"{SPINNER_FRAMES[self._spinner_frame]} Generating"
+        )
+
     @work(exclusive=True)
     async def _run_generation(self, text: str) -> None:
         self._generating = True
         self._set_copy_btn(False)
+        self._start_spinner()
         diff_panel = self.query_one("#diff-panel", DiffTextArea)
 
         # Input truncation
@@ -586,8 +621,6 @@ class WriteApp(App):
         if len(text) > self._config.max_input_chars:
             send_text = text[: self._config.max_input_chars]
             truncated = True
-
-        diff_panel.load_text("Generating…")
 
         language = await asyncio.get_event_loop().run_in_executor(
             None, detect_language, send_text
@@ -608,6 +641,7 @@ class WriteApp(App):
 
         except Exception as exc:
             await self._handle_api_error(exc, send_text, diff_panel)
+            self._stop_spinner()
             self._generating = False
             return
 
@@ -628,6 +662,7 @@ class WriteApp(App):
         self._cache[key] = accumulated
         self._last_generated_key = key
 
+        self._stop_spinner()
         self._set_copy_btn(True)
         self._generating = False
 
