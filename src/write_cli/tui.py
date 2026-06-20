@@ -14,6 +14,8 @@ from textual.widgets import (
     TextArea,
 )
 
+from .session import load_session, save_session
+
 try:
     import langdetect
 
@@ -381,7 +383,16 @@ class WriteApp(App):
               for m in MODES],
         )
         self._refresh_toolbar_states()
-        self.query_one("#input-area", TextArea).focus()
+        input_area = self.query_one("#input-area", TextArea)
+        session = load_session()
+        if session.get("input"):
+            input_area.load_text(session["input"])
+            if session.get("suggestion"):
+                self._suggestion = session["suggestion"]
+                self._last_input_text = session["input"]
+                self._update_diff_panel()
+                self._set_copy_btn(True)
+        input_area.focus()
 
     def _refresh_toolbar_states(self) -> None:
         """Update active/inactive CSS classes on toolbar buttons without remounting."""
@@ -554,6 +565,8 @@ class WriteApp(App):
         text = self.query_one("#input-area", TextArea).text.strip()
         if not text:
             return
+        # Persist partial input so it survives restart
+        save_session(text, self._suggestion)
         # Min chars guard
         if len(text) < self._config.min_input_chars:
             self.query_one("#diff-panel", DiffTextArea).load_text(
@@ -650,6 +663,7 @@ class WriteApp(App):
             self._cache.pop(next(iter(self._cache)))
         self._cache[key] = accumulated
         self._last_generated_key = key
+        save_session(text, accumulated)
 
         self._stop_spinner()
         self._set_copy_btn(True)
