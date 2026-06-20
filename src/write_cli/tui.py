@@ -9,7 +9,6 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import (
     Button,
-    Footer,
     Header,
     Label,
     TextArea,
@@ -127,11 +126,26 @@ class WriteApp(App):
         height: 1fr;
         border: solid $primary;
     }
-    #copy-btn {
+    #footer-bar {
         dock: bottom;
         height: 1;
-        margin: 0;
-        border: none;
+        background: $panel;
+        padding: 0 1;
+        layout: horizontal;
+        align: left middle;
+    }
+    .footer-hint {
+        margin: 0 1;
+        color: $text-muted;
+    }
+    .footer-hint-key {
+        color: $text;
+        background: $surface-lighten-2;
+        padding: 0 1;
+    }
+    #copy-hint-key.is-disabled, #copy-hint-label.is-disabled {
+        color: $text-disabled;
+        background: transparent;
     }
     .toolbar-label {
         margin: 0 1;
@@ -204,8 +218,17 @@ class WriteApp(App):
                 yield TextArea(id="input-area")
             with Vertical(id="right-panel-wrap"):
                 yield SuggestionTextArea("", id="right-panel", read_only=True)
-                yield Button("📋 Copy all", id="copy-btn", variant="success", disabled=True)
-        yield Footer()
+        with Horizontal(id="footer-bar"):
+            yield Label("^G", classes="footer-hint-key")
+            yield Label("Generate", classes="footer-hint")
+            yield Label("^T", classes="footer-hint-key")
+            yield Label("Tone", classes="footer-hint")
+            yield Label("^R", classes="footer-hint-key")
+            yield Label("Mode", classes="footer-hint")
+            yield Label("^Y", classes="footer-hint-key", id="copy-hint-key")
+            yield Label("Copy all", classes="footer-hint", id="copy-hint-label")
+            yield Label("^Q", classes="footer-hint-key")
+            yield Label("Quit", classes="footer-hint")
 
     def _build_toolbar(self) -> Horizontal:
         return Horizontal(id="toolbar")
@@ -296,8 +319,6 @@ class WriteApp(App):
             self._trigger_auto_generate()
         elif btn_id == "generate-btn":
             self.action_generate()
-        elif btn_id == "copy-btn":
-            self.action_accept()
         event.stop()
 
     def action_cycle_tone(self) -> None:
@@ -375,8 +396,8 @@ class WriteApp(App):
         self._run_generation(text)
 
     def _set_copy_btn(self, enabled: bool) -> None:
-        btn = self.query_one("#copy-btn", Button)
-        btn.disabled = not enabled
+        for wid in ("copy-hint-key", "copy-hint-label"):
+            self.query_one(f"#{wid}", Label).set_class(not enabled, "is-disabled")
 
     @work(exclusive=True)
     async def _run_generation(self, text: str) -> None:
