@@ -189,22 +189,16 @@ class WriteApp(App):
         height: 1fr;
         border: none;
     }
-    #right-panel {
+    #right-panel-wrap {
         width: 1fr;
         height: 1fr;
-        border: none;
+        border: solid $primary;
     }
     #diff-panel {
         width: 1fr;
         height: 1fr;
         border: none;
         padding: 1 2;
-        display: none;
-    }
-    #right-panel-wrap {
-        width: 1fr;
-        height: 1fr;
-        border: solid $primary;
     }
     #footer-bar {
         dock: bottom;
@@ -272,7 +266,6 @@ class WriteApp(App):
         Binding("ctrl+g", "generate", "Generate", show=True, priority=True),
         Binding("ctrl+t", "cycle_tone", "Tone", show=True, priority=True),
         Binding("ctrl+r", "cycle_mode", "Mode", show=True, priority=True),
-        Binding("ctrl+d", "toggle_diff", "Diff", show=True, priority=True),
         Binding("ctrl+n", "next_alt", "Next alt", show=False, priority=True),
         Binding("ctrl+p", "prev_alt", "Prev alt", show=False, priority=True),
         Binding("ctrl+y", "accept", "Copy all", show=True, priority=True),
@@ -294,8 +287,6 @@ class WriteApp(App):
         # Track text at last debounce trigger to detect trivial changes
         self._last_triggered_text: str = ""
         # Diff feature
-        self._diff_mode: bool = False
-        self._diff_markup: str = ""        # kept for compatibility, no longer used for display
         self._last_input_text: str = ""    # original input used for current suggestion
         # Alternatives feature
         self._alternatives: list[str] = []
@@ -311,7 +302,6 @@ class WriteApp(App):
             with Vertical(id="left-panel"):
                 yield TextArea(id="input-area")
             with Vertical(id="right-panel-wrap"):
-                yield SuggestionTextArea("", id="right-panel", read_only=True)
                 yield DiffTextArea("", id="diff-panel", read_only=True)
         with Horizontal(id="footer-bar"):
             yield Label("^G", classes="footer-hint-key")
@@ -320,8 +310,6 @@ class WriteApp(App):
             yield Label("Tone", classes="footer-hint")
             yield Label("^R", classes="footer-hint-key")
             yield Label("Mode", classes="footer-hint")
-            yield Label("^D", classes="footer-hint-key")
-            yield Label("Diff", classes="footer-hint")
             yield Label("^N/^P", classes="footer-hint-key")
             yield Label("Alt", classes="footer-hint")
             yield Label("", id="alt-counter")
@@ -351,8 +339,6 @@ class WriteApp(App):
               for m in MODES],
             Label("  ", classes="toolbar-label"),
             Button("⚡ Generate", id="generate-btn", variant="primary"),
-            Label("  ", classes="toolbar-label"),
-            Button("Diff", id="diff-btn", classes="mode-btn"),
         )
         self._refresh_toolbar_states()
         self.query_one("#input-area", TextArea).focus()
@@ -369,7 +355,6 @@ class WriteApp(App):
         for m in MODES:
             btn = self.query_one(f"#mode-{m}", Button)
             btn.set_class(m == self._active_mode(), "is-active")
-        self.query_one("#diff-btn", Button).set_class(self._diff_mode, "is-active")
 
     def _update_toolbar(self) -> None:
         self._refresh_toolbar_states()
@@ -422,8 +407,6 @@ class WriteApp(App):
             self._trigger_auto_generate()
         elif btn_id == "generate-btn":
             self.action_generate()
-        elif btn_id == "diff-btn":
-            self.action_toggle_diff()
         event.stop()
 
     def action_cycle_tone(self) -> None:
@@ -437,16 +420,6 @@ class WriteApp(App):
         self._update_toolbar()
         self.notify(f"Mode: {self._active_mode()}", timeout=1.5)
         self._trigger_auto_generate()
-
-    def action_toggle_diff(self) -> None:
-        self._diff_mode = not self._diff_mode
-        plain = self.query_one("#right-panel", SuggestionTextArea)
-        diff = self.query_one("#diff-panel", DiffTextArea)
-        plain.display = not self._diff_mode
-        diff.display = self._diff_mode
-        if self._diff_mode:
-            self._update_diff_panel()
-        self._refresh_toolbar_states()
 
     def _update_diff_panel(self) -> None:
         diff = self.query_one("#diff-panel", DiffTextArea)
@@ -473,9 +446,7 @@ class WriteApp(App):
         self._alt_index = idx
         suggestion = self._alternatives[idx]
         self._suggestion = suggestion
-        self.query_one("#right-panel", SuggestionTextArea).load_text(suggestion)
-        if self._diff_mode:
-            self._update_diff_panel()
+        self._update_diff_panel()
         self._update_alt_counter()
         self._set_copy_btn(True)
 
@@ -524,7 +495,7 @@ class WriteApp(App):
             self._debounce_handle.cancel()
         text = event.text_area.text.strip()
         if not text:
-            self.query_one("#right-panel", SuggestionTextArea).load_text("")
+            self.query_one("#diff-panel", DiffTextArea).load_text("")
             self._last_triggered_text = ""
             return
         # Skip if trivial change (< 3 chars different from last trigger)
@@ -544,7 +515,7 @@ class WriteApp(App):
             return
         # Min chars guard
         if len(text) < self._config.min_input_chars:
-            self.query_one("#right-panel", SuggestionTextArea).load_text(
+            self.query_one("#diff-panel", DiffTextArea).load_text(
                 f"Type at least {self._config.min_input_chars} characters to get a suggestion…"
             )
             return
@@ -555,9 +526,9 @@ class WriteApp(App):
         self._last_triggered_text = text
         # Serve from cache if available
         if key in self._cache:
-            panel = self.query_one("#right-panel", SuggestionTextArea)
-            panel.load_text(self._cache[key])
             self._suggestion = self._cache[key]
+            self._last_input_text = text
+            self._update_diff_panel()
             self._set_copy_btn(True)
             return
         self._run_generation(text)
@@ -584,7 +555,7 @@ class WriteApp(App):
     async def _run_generation(self, text: str) -> None:
         self._generating = True
         self._set_copy_btn(False)
-        panel = self.query_one("#right-panel", SuggestionTextArea)
+        diff_panel = self.query_one("#diff-panel", DiffTextArea)
 
         # Input truncation
         truncated = False
@@ -593,7 +564,7 @@ class WriteApp(App):
             send_text = text[: self._config.max_input_chars]
             truncated = True
 
-        panel.load_text("Generating…")
+        diff_panel.load_text("Generating…")
 
         language = await asyncio.get_event_loop().run_in_executor(
             None, detect_language, send_text
@@ -610,10 +581,10 @@ class WriteApp(App):
             )
             async for token in gen:
                 accumulated += token
-                panel.load_text(accumulated)
+                diff_panel.load_text(accumulated)
 
         except Exception as exc:
-            await self._handle_api_error(exc, send_text, panel)
+            await self._handle_api_error(exc, send_text, diff_panel)
             self._generating = False
             return
 
@@ -622,8 +593,7 @@ class WriteApp(App):
 
         self._suggestion = accumulated
         self._last_input_text = text
-        if self._diff_mode:
-            self._update_diff_panel()
+        self._update_diff_panel()
         # Reset alternatives to just this first result
         self._alternatives = [accumulated]
         self._alt_index = 0
@@ -635,11 +605,10 @@ class WriteApp(App):
         self._cache[key] = accumulated
         self._last_generated_key = key
 
-        panel.load_text(accumulated)
         self._set_copy_btn(True)
         self._generating = False
 
-    async def _handle_api_error(self, exc: Exception, text: str, panel: SuggestionTextArea) -> None:
+    async def _handle_api_error(self, exc: Exception, text: str, panel: DiffTextArea) -> None:
         """Classify API errors and show friendly messages; auto-retry on rate limit."""
         exc_str = str(exc)
         code = getattr(exc, "status_code", None) or getattr(
