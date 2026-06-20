@@ -171,11 +171,11 @@ class WriteApp(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+g", "generate", "Generate (Ctrl+G)", show=True),
-        Binding("ctrl+t", "cycle_tone", "Tone (Ctrl+T)", show=True),
-        Binding("ctrl+r", "cycle_mode", "Mode (Ctrl+R)", show=True),
-        Binding("ctrl+y", "accept", "Copy all (Ctrl+Y)", show=True),
-        Binding("ctrl+q", "quit", "Quit (Ctrl+Q)", show=True),
+        Binding("ctrl+g", "generate", "Generate", show=True),
+        Binding("ctrl+t", "cycle_tone", "Tone", show=True),
+        Binding("ctrl+r", "cycle_mode", "Mode", show=True),
+        Binding("ctrl+y", "accept", "Copy all", show=True),
+        Binding("ctrl+q", "quit", "Quit", show=True),
     ]
 
     def __init__(self, provider, config) -> None:  # type: ignore[type-arg]
@@ -204,7 +204,7 @@ class WriteApp(App):
                 yield TextArea(id="input-area")
             with Vertical(id="right-panel-wrap"):
                 yield SuggestionTextArea("", id="right-panel", read_only=True)
-                yield Button("📋 Copy all  (Ctrl+Y)", id="copy-btn", variant="success", disabled=True)
+                yield Button("📋 Copy all", id="copy-btn", variant="success", disabled=True)
         yield Footer()
 
     def _build_toolbar(self) -> Horizontal:
@@ -373,7 +373,6 @@ class WriteApp(App):
         self._cache.pop(self._cache_key(text), None)
         self._last_generated_key = None
         self._run_generation(text)
-
 
     def _set_copy_btn(self, enabled: bool) -> None:
         btn = self.query_one("#copy-btn", Button)
