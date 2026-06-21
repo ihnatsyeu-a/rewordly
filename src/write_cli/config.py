@@ -13,6 +13,11 @@ class Provider(str, Enum):
     GITHUB = "github"
     OPENAI = "openai"
     GEMINI = "gemini"
+    OLLAMA = "ollama"
+
+    def next(self) -> "Provider":
+        members = list(Provider)
+        return members[(members.index(self) + 1) % len(members)]
 
 
 class Tone(str, Enum):
@@ -30,13 +35,30 @@ _DEFAULT_MODELS: dict[Provider, str] = {
     Provider.GITHUB: "gpt-4o-mini",
     Provider.OPENAI: "gpt-4o-mini",
     Provider.GEMINI: "gemini-2.5-flash",
+    Provider.OLLAMA: "",
 }
+
+
+_PROVIDER_ENV_VARS: dict[Provider, str | None] = {
+    Provider.GITHUB: "GITHUB_TOKEN",
+    Provider.OPENAI: "OPENAI_API_KEY",
+    Provider.GEMINI: "GEMINI_API_KEY",
+    Provider.OLLAMA: None,  # no key required
+}
+
+
+def available_providers() -> list[Provider]:
+    """Return providers that have credentials configured (or require none)."""
+    return [
+        p for p in Provider
+        if _PROVIDER_ENV_VARS[p] is None or bool(os.getenv(_PROVIDER_ENV_VARS[p], ""))
+    ]
 
 
 @dataclass
 class Config:
     provider: Provider = field(
-        default_factory=lambda: Provider(os.getenv("PROVIDER", "github").lower())
+        default_factory=lambda: Provider(os.getenv("PROVIDER", "ollama").lower())
     )
     tone: Tone = field(
         default_factory=lambda: Tone(os.getenv("DEFAULT_TONE", "formal").lower())
@@ -57,6 +79,8 @@ class Config:
             self.model = os.getenv("DEFAULT_MODEL", "") or _DEFAULT_MODELS[self.provider]
 
     def api_key(self) -> str:
+        if self.provider == Provider.OLLAMA:
+            return ""
         mapping = {
             Provider.GITHUB: "GITHUB_TOKEN",
             Provider.OPENAI: "OPENAI_API_KEY",
@@ -83,7 +107,7 @@ def get_config(
     global _config
     if _config is None or provider is not None or model or tone is not None:
         cfg = Config(
-            provider=provider or Provider(os.getenv("PROVIDER", "github").lower()),
+            provider=provider or Provider(os.getenv("PROVIDER", "ollama").lower()),
             tone=tone or Tone(os.getenv("DEFAULT_TONE", "formal").lower()),
             model=model,
         )

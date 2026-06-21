@@ -306,6 +306,7 @@ class WriteApp(App):
     """
 
     BINDINGS = [
+        Binding("ctrl+g", "cycle_provider", "Provider", show=True, priority=True),
         Binding("ctrl+t", "cycle_tone", "Tone", show=True, priority=True),
         Binding("ctrl+r", "cycle_mode", "Mode", show=True, priority=True),
         Binding("ctrl+n", "next_alt", "Next alt", show=False, priority=True),
@@ -350,6 +351,8 @@ class WriteApp(App):
                 yield Label("", id="loading")
                 yield DiffTextArea("", id="diff-panel", read_only=True)
         with Horizontal(id="footer-bar"):
+            yield Label("^G", classes="footer-hint-key")
+            yield Label("Provider", classes="footer-hint")
             yield Label("^T", classes="footer-hint-key")
             yield Label("Tone", classes="footer-hint")
             yield Label("^R", classes="footer-hint-key")
@@ -366,13 +369,16 @@ class WriteApp(App):
         return Horizontal(id="toolbar")
 
     def on_mount(self) -> None:
-        from .config import Tone, Provider
+        from .config import Tone
         self.sub_title = f"{self._config.provider.value}  /  {self._config.model}"
         toolbar = self.query_one("#toolbar", Horizontal)
         toolbar.mount(
             Label("Provider:", classes="toolbar-label"),
-            *[Button(p.value.capitalize(), id=f"provider-{p.value}", classes="provider-btn")
-              for p in Provider],
+            Button(
+                self._config.provider.value.capitalize(),
+                id="provider-cycle",
+                classes="provider-btn is-active",
+            ),
             Label("  ", classes="toolbar-label"),
             Label("Tone:", classes="toolbar-label"),
             *[Button(t.value.capitalize(), id=f"tone-{t.value}", classes="tone-btn")
@@ -393,13 +399,51 @@ class WriteApp(App):
                 self._update_diff_panel()
                 self._set_copy_btn(True)
         input_area.focus()
+        self._validate_ollama_model()
+
+    @work(exclusive=False)
+    async def _validate_ollama_model(self, on_switch: bool = False) -> None:
+        """Ensure the configured Ollama model is available; auto-select if not."""
+        from .config import Provider
+        from .providers.ollama import OllamaProvider
+        if self._config.provider != Provider.OLLAMA:
+            return
+        try:
+            models = await OllamaProvider.list_models()
+        except Exception:
+            if on_switch:
+                self.sub_title = f"{self._config.provider.value}  /  {self._config.model}"
+                self._refresh_toolbar_states()
+                self.notify(f"Provider: ollama  /  {self._config.model}", timeout=2)
+                self._trigger_auto_generate()
+            return
+        if not models:
+            self.notify(
+                "No Ollama models found. Run: ollama pull <model>",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        original_model = self._config.model
+        if self._config.model not in models:
+            self._config.model = models[0]
+        self.sub_title = f"{self._config.provider.value}  /  {self._config.model}"
+        if on_switch:
+            self._refresh_toolbar_states()
+            self.notify(f"Provider: ollama  /  {self._config.model}", timeout=2)
+            self._trigger_auto_generate()
+        elif self._config.model != original_model:
+            self.notify(
+                f"Auto-selected Ollama model: {self._config.model}",
+                severity="information",
+                timeout=4,
+            )
 
     def _refresh_toolbar_states(self) -> None:
         """Update active/inactive CSS classes on toolbar buttons without remounting."""
-        from .config import Tone, Provider
-        for p in Provider:
-            btn = self.query_one(f"#provider-{p.value}", Button)
-            btn.set_class(p == self._config.provider, "is-active")
+        from .config import Tone
+        btn = self.query_one("#provider-cycle", Button)
+        btn.label = self._config.provider.value.capitalize()
         for t in Tone:
             btn = self.query_one(f"#tone-{t.value}", Button)
             btn.set_class(t == self._config.tone, "is-active")
@@ -434,16 +478,19 @@ class WriteApp(App):
         # Clear cache — different provider may give different results
         self._cache.clear()
         self._last_generated_key = None
-        self.sub_title = f"{self._config.provider.value}  /  {self._config.model}"
-        self._refresh_toolbar_states()
-        self.notify(f"Provider: {provider_value}  /  {self._config.model}", timeout=2)
-        self._trigger_auto_generate()
+        if new_provider_enum == Provider.OLLAMA:
+            self._validate_ollama_model(on_switch=True)
+        else:
+            self.sub_title = f"{self._config.provider.value}  /  {self._config.model}"
+            self._refresh_toolbar_states()
+            self.notify(f"Provider: {provider_value}  /  {self._config.model}", timeout=2)
+            self._trigger_auto_generate()
 
     @on(Button.Pressed)
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id or ""
-        if btn_id.startswith("provider-"):
-            self._switch_provider(btn_id[len("provider-"):])
+        if btn_id == "provider-cycle":
+            self.action_cycle_provider()
         elif btn_id.startswith("tone-"):
             from .config import Tone
             self._config.tone = Tone(btn_id[len("tone-"):])
@@ -457,6 +504,15 @@ class WriteApp(App):
             self.notify(f"Mode: {mode}", timeout=1.5)
             self._trigger_auto_generate()
         event.stop()
+
+    def action_cycle_provider(self) -> None:
+        from .config import available_providers
+        providers = available_providers()
+        if len(providers) <= 1:
+            return
+        idx = providers.index(self._config.provider) if self._config.provider in providers else -1
+        next_provider = providers[(idx + 1) % len(providers)]
+        self._switch_provider(next_provider.value)
 
     def action_cycle_tone(self) -> None:
         self._config.tone = self._config.tone.next()
@@ -565,6 +621,10 @@ class WriteApp(App):
         text = self.query_one("#input-area", TextArea).text.strip()
         if not text:
             return
+        # Skip if Ollama model not yet resolved
+        from .config import Provider
+        if self._config.provider == Provider.OLLAMA and not self._config.model:
+            return
         # Persist partial input so it survives restart
         save_session(text, self._suggestion)
         # Min chars guard
@@ -647,6 +707,12 @@ class WriteApp(App):
             self._generating = False
             return
 
+        if not accumulated:
+            diff_panel.load_text("⚠ Model returned an empty response.\n\nPress Ctrl+R to retry.")
+            self._stop_spinner()
+            self._generating = False
+            return
+
         if truncated:
             accumulated += f"\n\n[Input was truncated to {self._config.max_input_chars} characters]"
 
@@ -703,11 +769,40 @@ class WriteApp(App):
                 "Check your .env file and ensure the correct key is set."
             )
         elif code == 404 or "404" in exc_str or "not found" in exc_str.lower():
-            panel.load_text(
-                f"🔍 Model not found\n\n"
-                f"Model '{self._config.model}' is not available.\n"
-                "Try --model gemini-2.5-flash or check provider docs."
-            )
+            from .config import Provider
+            from .providers.ollama import OllamaProvider
+            if self._config.provider == Provider.OLLAMA:
+                try:
+                    models = await OllamaProvider.list_models()
+                    if models:
+                        new_model = models[0]
+                        self._config.model = new_model
+                        self.sub_title = f"{self._config.provider.value}  /  {new_model}"
+                        self.notify(
+                            f"Auto-selected Ollama model: {new_model}",
+                            severity="information",
+                            timeout=4,
+                        )
+                        self._trigger_auto_generate()
+                        return
+                    panel.load_text(
+                        "🔍 No Ollama models found\n\n"
+                        "Pull a model first: ollama pull <model>\n"
+                        "Then press Ctrl+R to retry."
+                    )
+                except Exception:
+                    panel.load_text(
+                        "🔍 Model not found\n\n"
+                        f"Model '{self._config.model}' is not available and\n"
+                        "Ollama could not be reached to find alternatives.\n"
+                        "Make sure Ollama is running."
+                    )
+            else:
+                panel.load_text(
+                    f"🔍 Model not found\n\n"
+                    f"Model '{self._config.model}' is not available.\n"
+                    "Try --model gemini-2.5-flash or check provider docs."
+                )
         elif "connection" in exc_str.lower() or "network" in exc_str.lower() or "timeout" in exc_str.lower():
             panel.load_text(
                 "🌐 Network error\n\n"

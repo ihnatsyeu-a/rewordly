@@ -59,7 +59,6 @@ class OpenAICompatibleProvider(AIProvider):
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=min(500, max(50, len(text.split()) * 3)),
             stream=True,
         )
         async for chunk in stream:

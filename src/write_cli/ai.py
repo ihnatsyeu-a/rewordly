@@ -4,6 +4,7 @@ from .config import Config, Provider
 from .providers.base import AIProvider
 from .providers.gemini import GeminiProvider
 from .providers.github import GitHubModelsProvider
+from .providers.ollama import OllamaProvider
 from .providers.openai_provider import OpenAIProvider
 
 
@@ -17,5 +18,7 @@ def create_provider(config: Config) -> AIProvider:
             return OpenAIProvider(api_key)
         case Provider.GEMINI:
             return GeminiProvider(api_key)
+        case Provider.OLLAMA:
+            return OllamaProvider()
         case _:
             raise ValueError(f"Unknown provider: {config.provider}")
